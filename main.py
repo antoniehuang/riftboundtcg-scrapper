@@ -128,7 +128,7 @@ def download_images(urls: Iterable[str], out_dir: Path) -> None:
         subdir.mkdir(parents=True, exist_ok=True)
         next_idx = counters.get(prefix, 1)
         ext = file_ext_for_url(u)
-        dest = subdir / f"{next_idx}{ext}"
+        dest = subdir / f"{next_idx:03d}{ext}"
         try:
             r = requests.get(u, headers=headers, timeout=30)
             r.raise_for_status()
@@ -147,10 +147,10 @@ def try_head(url: str, headers: dict) -> bool:
         return False
 
 
-def fallback_guess_by_prefixes(out_dir: Path, prefixes: list[str], start: int = 1, miss_limit: int = 25) -> None:
+def fallback_guess_by_prefixes(out_dir: Path, prefixes: list[str], start: int = 1, miss_limit: int = 3, asset: str | None = None) -> None:
     """
     Guess image URLs by iterating <PREFIX>-001.. for each prefix and checking CDN for existence.
-    Downloads full-desktop-2x.jpg if available, else full-desktop.jpg.
+    Downloads only the specified asset filename under each code (no fallback to other sizes).
     Stops per-prefix after `miss_limit` consecutive misses.
     """
     headers = {
@@ -171,13 +171,11 @@ def fallback_guess_by_prefixes(out_dir: Path, prefixes: list[str], start: int = 
         # Use a wide upper bound; we'll break on miss streak
         for i in range(start, 2000):
             code = f"{prefix}-{i:03d}"
-            url2x = base.format(code=code) + "full-desktop-2x.jpg"
-            url1x = base.format(code=code) + "full-desktop.jpg"
             chosen = None
-            if try_head(url2x, headers):
-                chosen = url2x
-            elif try_head(url1x, headers):
-                chosen = url1x
+            fname = (asset or "full-desktop.jpg").lstrip("/")
+            candidate = base.format(code=code) + fname
+            if try_head(candidate, headers):
+                chosen = candidate
 
             if not chosen:
                 miss_streak += 1
@@ -187,7 +185,7 @@ def fallback_guess_by_prefixes(out_dir: Path, prefixes: list[str], start: int = 
                 continue
 
             miss_streak = 0
-            dest = subdir / f"{idx}.jpg"
+            dest = subdir / f"{idx:03d}.jpg"
             try:
                 r = requests.get(chosen, headers=headers, timeout=30)
                 r.raise_for_status()
@@ -202,7 +200,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Riftbound TCG image scraper (requests-only)")
     parser.add_argument("--prefixes", nargs="*", default=["OGS", "OGN"], help="Card set prefixes to scan (default: OGS OGN)")
     parser.add_argument("--start", type=int, default=1, help="Starting number for codes (default: 1)")
-    parser.add_argument("--miss-limit", type=int, default=25, help="Consecutive misses before stopping a prefix (default: 25)")
+    parser.add_argument("--miss-limit", type=int, default=3, help="Consecutive misses before stopping a prefix (default: 3)")
+    parser.add_argument(
+        "--asset",
+        default="full-desktop.jpg",
+        help=(
+            "Asset filename to fetch under each code (e.g., 'full-desktop.jpg'). "
+            "No fallback is attempted if the asset is missing. Default: full-desktop.jpg"
+        ),
+    )
     args = parser.parse_args()
     headers = {
         "User-Agent": (
@@ -217,7 +223,13 @@ def main() -> None:
     urls = extract_image_urls(resp.text, URL)
     if not urls:
         print("No images in static HTML. Falling back to pattern-based download (PREFIX-###)…")
-        fallback_guess_by_prefixes(OUT_DIR, prefixes=args.prefixes, start=args.start, miss_limit=args.miss_limit)
+        fallback_guess_by_prefixes(
+            OUT_DIR,
+            prefixes=args.prefixes,
+            start=args.start,
+            miss_limit=args.miss_limit,
+            asset=args.asset,
+        )
         print("Done.")
         return
     # Stable ordering so numbering is deterministic
